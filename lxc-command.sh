@@ -38,34 +38,21 @@ fi
 
 # ============================================================
 # Récupération des LXC actuellement démarrés
+# Une seule interrogation via "pct list"
 # ============================================================
 
-mapfile -t RUNNING_CTS < <(
-    pct list | awk 'NR>1 && $2=="running" {print $1}'
-)
-
-if [[ ${#RUNNING_CTS[@]} -eq 0 ]]; then
-    whiptail \
-        --title "LXC Command Runner" \
-        --msgbox "Aucun conteneur LXC n'est actuellement démarré." \
-        8 60
-
-    exit 0
-fi
-
-
-# ============================================================
-# Construction de la liste des conteneurs
-# ============================================================
-
+declare -A CT_NAMES
+RUNNING_CTS=()
 CHECKLIST=()
 
-for CTID in "${RUNNING_CTS[@]}"; do
+while read -r CTID HOSTNAME; do
 
-    HOSTNAME=$(pct config "$CTID" 2>/dev/null |
-        awk -F': ' '/^hostname:/ {print $2}')
+    [[ -z "$CTID" ]] && continue
 
     [[ -z "$HOSTNAME" ]] && HOSTNAME="Sans nom"
+
+    RUNNING_CTS+=("$CTID")
+    CT_NAMES["$CTID"]="$HOSTNAME"
 
     CHECKLIST+=(
         "$CTID"
@@ -73,7 +60,21 @@ for CTID in "${RUNNING_CTS[@]}"; do
         "OFF"
     )
 
-done
+done < <(
+    pct list | awk 'NR>1 && $2=="running" {print $1, $NF}'
+)
+
+
+if [[ ${#RUNNING_CTS[@]} -eq 0 ]]; then
+
+    whiptail \
+        --title "LXC Command Runner" \
+        --msgbox \
+        "Aucun conteneur LXC n'est actuellement démarré." \
+        8 60
+
+    exit 0
+fi
 
 
 # ============================================================
@@ -84,7 +85,9 @@ EXCLUDED=$(
     whiptail \
         --title "Exclusion des conteneurs" \
         --checklist \
-        "Sélectionnez les conteneurs à EXCLURE de l'exécution.\n\nLes conteneurs non cochés recevront la commande." \
+        "Sélectionnez les conteneurs à EXCLURE de l'exécution.
+
+Les conteneurs non cochés recevront la commande." \
         22 78 14 \
         "${CHECKLIST[@]}" \
         3>&1 1>&2 2>&3
@@ -110,8 +113,8 @@ COMMAND_TYPE=$(
         --title "Commande à exécuter" \
         --menu \
         "Choisissez la commande à exécuter :" \
-        16 75 5 \
-        "1" "apt update && apt upgrade" \
+        16 78 5 \
+        "1" "apt update && apt upgrade -y" \
         "2" "Commande personnalisée" \
         3>&1 1>&2 2>&3
 )
@@ -127,7 +130,7 @@ fi
 case "$COMMAND_TYPE" in
 
     1)
-        CUSTOM_COMMAND='apt update && apt upgrade'
+        CUSTOM_COMMAND='apt update && DEBIAN_FRONTEND=noninteractive apt upgrade -y'
         ;;
 
     2)
@@ -184,7 +187,9 @@ if [[ ${#TARGET_CTS[@]} -eq 0 ]]; then
     whiptail \
         --title "LXC Command Runner" \
         --msgbox \
-        "Tous les conteneurs ont été exclus.\n\nAucune commande ne sera exécutée." \
+        "Tous les conteneurs ont été exclus.
+
+Aucune commande ne sera exécutée." \
         10 60
 
     exit 0
@@ -199,8 +204,7 @@ TARGET_TEXT=""
 
 for CTID in "${TARGET_CTS[@]}"; do
 
-    HOSTNAME=$(pct config "$CTID" 2>/dev/null |
-        awk -F': ' '/^hostname:/ {print $2}')
+    HOSTNAME="${CT_NAMES[$CTID]:-Sans nom}"
 
     TARGET_TEXT+="${CTID} - ${HOSTNAME}\n"
 
@@ -210,7 +214,14 @@ done
 whiptail \
     --title "Confirmation" \
     --yesno \
-    "Commande :\n\n${CUSTOM_COMMAND}\n\nConteneurs concernés :\n\n${TARGET_TEXT}\nContinuer ?" \
+    "Commande :
+
+${CUSTOM_COMMAND}
+
+Conteneurs concernés :
+
+${TARGET_TEXT}
+Continuer ?" \
     22 78
 
 STATUS=$?
@@ -239,10 +250,7 @@ echo
 
 for CTID in "${TARGET_CTS[@]}"; do
 
-    HOSTNAME=$(pct config "$CTID" 2>/dev/null |
-        awk -F': ' '/^hostname:/ {print $2}')
-
-    [[ -z "$HOSTNAME" ]] && HOSTNAME="Sans nom"
+    HOSTNAME="${CT_NAMES[$CTID]:-Sans nom}"
 
     echo
     echo -e "${BLUE}------------------------------------------------------------${NC}"
@@ -251,13 +259,12 @@ for CTID in "${TARGET_CTS[@]}"; do
     echo
 
     # Vérifie une dernière fois que le CT est toujours démarré
-    if ! pct status "$CTID" | grep -q "status: running"; then
+    if ! pct status "$CTID" 2>/dev/null | grep -q "status: running"; then
 
         echo -e "${YELLOW}Le conteneur n'est plus démarré. Ignoré.${NC}"
 
         FAILED+=("$CTID:$HOSTNAME")
         continue
-
     fi
 
 
